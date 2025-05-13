@@ -1,192 +1,137 @@
 import math
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from IPython.display import HTML
 import random
 import pandas as pd
 
-
+# Body class
 class Body:
-    """Represents a body with methods to compute forces and displacements."""
-
-    def _init_(self, x, y, radius, color, mass, vx=0, vy=0):
+    def __init__(self, x, y, mass, vx, vy, color="black"):
         self.x = x
         self.y = y
-        self.radius = radius
-        self.color = color
         self.mass = mass
         self.vx = vx
         self.vy = vy
+        self.color = color
         self.orbit = [(x, y)]
 
-def update_position(body, dt):
-    body.x += body.vx * dt
-    body.y += body.vy * dt
+def gravitational_force(b1, b2, G=1.0):
+    dx = b2.x - b1.x
+    dy = b2.y - b1.y
+    dist_sq = dx**2 + dy**2 + 1e-6
+    dist = math.sqrt(dist_sq)
+    force = G * b1.mass * b2.mass / dist_sq
+    fx = force * dx / dist
+    fy = force * dy / dist
+    return fx, fy
 
-def update_velocity(body, force, dt):
-
-    ax = force[0] / body.mass
-    ay = force[1] / body.mass
-    body.vx += ax * dt
-    body.vy += ay * dt
-
-def gravitational_force(body1, body2):
-    # Displacements.
-    G = 1.0
-    dx = body2.x - body1.x
-    dy = body2.y - body1.y
-
-    # Distances.
-    distance_squared = dx*2 + dy*2
-    distance = math.sqrt(distance_squared)
-
-    # Forces.
-    force_magnitude = G * body1.mass * body2.mass / distance_squared
-    force_x = force_magnitude * dx / distance
-    force_y = force_magnitude * dy / distance
-
-    return (force_x, force_y)
-
-
-def simulate(bodies, dt, steps):
-    records = []
+def simulate(bodies, steps=5000, dt=0.01):
     for _ in range(steps):
-        # compute & apply forces
-        for b in bodies:
-            total_fx, total_fy = 0.0, 0.0
-            for o in bodies:
-                if o is not b:
-                    fx, fy = gravitational_force(b, o)
-                    total_fx += fx
-                    total_fy += fy
-            update_velocity(b, (total_fx, total_fy), dt)
-        # move and record
-        for b in bodies:
-            update_position(b, dt)
-            b.orbit.append((b.x, b.y))
-        # snapshot
-        flat = []
-        for b in bodies:
-            flat += [b.x, b.y, b.vx, b.vy]
-        records.append(flat)
-    return records
-
-
-def classify_outcome(bodies, G=1.0):
-    # 1) collision check over the whole orbit
-    col_d = bodies[0].radius + bodies[1].radius  # equals 0.2 if all radii==0.1
-    n_steps = len(bodies[0].orbit)
-    for t in range(n_steps):
+        forces = []
         for i, b1 in enumerate(bodies):
-            x1, y1 = b1.orbit[t]
-            for b2 in bodies[i+1:]:
-                x2, y2 = b2.orbit[t]
-                if math.hypot(x1 - x2, y1 - y2) < col_d:
-                    return "convergence"
+            fx_total, fy_total = 0, 0
+            for j, b2 in enumerate(bodies):
+                if i != j:
+                    fx, fy = gravitational_force(b1, b2)
+                    fx_total += fx
+                    fy_total += fy
+            forces.append((fx_total, fy_total))
 
-    # 2) energy‐based escape test at final time
-    K = sum(0.5 * b.mass * (b.vx*2 + b.vy*2) for b in bodies)
-    V = 0.0
-    for i, b1 in enumerate(bodies):
-        for b2 in bodies[i+1:]:
-            dx = b1.x - b2.x
-            dy = b1.y - b2.y
-            r = math.hypot(dx, dy) + 1e-6
-            V -= G * b1.mass * b2.mass / r
-    if K + V > 0:
-        return "divergence"
+        for i, b in enumerate(bodies):
+            fx, fy = forces[i]
+            ax = fx / b.mass
+            ay = fy / b.mass
+            b.vx += ax * dt
+            b.vy += ay * dt
+            b.x += b.vx * dt
+            b.y += b.vy * dt
+            b.orbit.append((b.x, b.y))
 
-    return "stable"
+    return bodies
 
+# Utility for perturbation
+def perturb(val, eps=1e-2):
+    return val + random.uniform(-eps, eps)
 
-def make_dataset_per_class(
-    target=1,
-    steps=5000,
-    dt=0.01,
-    out_csv="dataset.csv"
-):
-    # target counts
-    targets = {"stable": target,
-               "divergence": target,
-               "convergence": target}
-    counts = {k: 0 for k in targets}
-    all_rows = []
+# Known stable configuration: Lagrange triangle orbit
+def make_lagrange_config():
+    r = 1.0
+    m = 1.0
+    angles = [0, 2 * math.pi / 3, 4 * math.pi / 3]
+    positions = [(r * math.cos(a), r * math.sin(a)) for a in angles]
+    v_mag = 0.5
+    velocities = [(-v_mag * math.sin(a), v_mag * math.cos(a)) for a in angles]
+    bodies = [Body(perturb(x), perturb(y), m, perturb(vx), perturb(vy)) 
+              for (x, y), (vx, vy) in zip(positions, velocities)]
+    return bodies
 
-    # keep going until every class is filled
-    while any(counts[label] < target for label in targets):
-        # 1) random init
-        bodies = [
-            Body(random.uniform(-1,1),
-                 random.uniform(-1,1),
-                 0.1,
-                 color,
-                 random.uniform(0.5,2),
-                 random.uniform(-1,1),
-                 random.uniform(-1,1))
-            for color in ("red","green","blue")
-        ]
+# Known stable configuration: Euler linear orbit
+def make_euler_config():
+    m = 1.0
+    bodies = [
+        Body(perturb(-1.0), 0.0, m, 0.0, perturb(0.3)),
+        Body(perturb(0.0), 0.0, m, 0.0, perturb(0.0)),
+        Body(perturb(1.0), 0.0, m, 0.0, perturb(-0.3)),
+    ]
+    return bodies
 
-        # sim
-        traj = simulate(bodies, dt, steps)
-        # class
-        label = classify_outcome(bodies)
+# Known stable configuration: figure-eight (approx)
+def make_figure8_config():
+    # Moore’s 3-body figure-eight initial conditions
+    return [
+        Body(perturb(-0.97000436), perturb(0.24308753), 1.0, perturb(0.4662036850), perturb(0.4323657300)),
+        Body(perturb(0.97000436), perturb(-0.24308753), 1.0, perturb(0.4662036850), perturb(0.4323657300)),
+        Body(perturb(0.0), perturb(0.0), 1.0, perturb(-0.93240737), perturb(-0.86473146)),
+    ]
 
-        # only accept if we still need this class
-        if counts[label] < target:
-            # flatten into one row
-            row = {}
-            for t, state in enumerate(traj):
-                for i in range(3):
-                    x, y, vx, vy = state[4*i:4*i+4]
-                    row[f"x{i+1}_t{t}"]  = x
-                    row[f"y{i+1}_t{t}"]  = y
-                    row[f"vx{i+1}_t{t}"] = vx
-                    row[f"vy{i+1}_t{t}"] = vy
-            row["label"] = label
+# Divergent configurations
+def make_divergent_config():
+    return [
+        Body(random.uniform(-1, 1), random.uniform(-1, 1), 1.0, random.uniform(5, 10), random.uniform(5, 10)),
+        Body(random.uniform(-1, 1), random.uniform(-1, 1), 1.0, random.uniform(5, 10), random.uniform(5, 10)),
+        Body(random.uniform(-1, 1), random.uniform(-1, 1), 1.0, random.uniform(5, 10), random.uniform(5, 10)),
+    ]
 
-            all_rows.append(row)
-            counts[label] += 1
-            print(f"Collected {counts[label]}/{target} of {label}")
+# Convergent configurations
+def make_convergent_config():
+    return [
+        Body(-0.1, 0.0, 1.0, 0.5, 0.0),
+        Body(0.1, 0.0, 1.0, -0.5, 0.0),
+        Body(0.0, 0.2, 1.0, 0.0, -0.5),
+    ]
 
-    # build and save
-    df = pd.DataFrame(all_rows)
-    df.to_csv(out_csv, index=False)
-    print("\nFinal counts:", counts)
-    return df
+# Generate dataset
+def generate_configurations():
+    data = {"stable": [], "divergent": [], "convergent": []}
 
-if _name_ == "_main_":
-    # 1) generate balanced dataset
-    df = make_dataset_per_class()
-    print(df.label.value_counts())
+    for _ in range(2):
+        data["stable"].append(make_lagrange_config())
+        data["stable"].append(make_euler_config())
+        data["stable"].append(make_figure8_config())
 
-    # 2) animate examples with plt.show()
-    steps = 5000
-    colors = ["red", "green", "blue"]
+    for _ in range(5):
+        data["divergent"].append(make_divergent_config())
+        data["convergent"].append(make_convergent_config())
 
-    for label in ["stable", "divergence", "convergence"]:
-        sample = df[df.label == label].sample(1).iloc[0]
+    # Trim stable to 5
+    data["stable"] = data["stable"][:5]
 
-        # rebuild orbits
-        orbits = []
-        for i in (1, 2, 3):
-            orbit = [(sample[f"x{i}_t{t}"], sample[f"y{i}_t{t}"]) for t in range(steps)]
-            orbits.append(orbit)
+    return data
 
-        # define animator
-        def animate_case(frame, orbits=orbits):
-            ax.clear()
-            ax.axhline(0, color='black', linewidth=0.5)
-            ax.axvline(0, color='black', linewidth=0.5)
-            for color, orbit in zip(colors, orbits):
-                xs, ys = zip(*orbit[:frame+1])
-                ax.plot(xs, ys, color=color, linewidth=2)
-                ax.scatter(xs[-1], ys[-1], color=color, s=100)
+# Collect simulation results
+def simulate_all(data, steps=5000, dt=0.01):
+    all_results = []
+    for label, configs in data.items():
+        for idx, config in enumerate(configs):
+            sim = simulate(config, steps=steps, dt=dt)
+            result = {
+                "label": label,
+                "initial_conditions": [(b.x, b.y, b.vx, b.vy, b.mass) for b in config],
+                "trajectories": [b.orbit for b in config],
+            }
+            all_results.append(result)
+    return all_results
 
-        # set up and show animation
-        fig, ax = plt.subplots(figsize=(5,5))
-        fig.suptitle(label.capitalize(), fontsize=14)
-        ax.set_xlim(-5, 5)
-        ax.set_ylim(-5, 5)
-
-        ani = FuncAnimation(fig, animate_case, frames=steps, interval=50)
-        plt.show()
+# Example usage:
+if __name__ == "__main__":
+    dataset = generate_configurations()
+    full_trajectories = simulate_all(dataset, steps=3000, dt=0.01)
+    # At this point, `full_trajectories` contains everything
