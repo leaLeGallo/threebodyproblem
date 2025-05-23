@@ -1,103 +1,176 @@
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-from newnewfart import Body, recenter, verlet
+import math
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
-# ─── 1) Load the initial conditions ─────────────────────────────────────────
-df = pd.read_csv(
-    'dataset.txt',
-    delim_whitespace=True,
-    dtype={
-        'm1': float, 'm2': float, 'm3': float,
-        'x1': float, 'v1': float, 'v2': float,
-        'T':  float, 'stability': str
-    }
-)
+#--- Core physics definitions ---
+class Body:
+    """Represents a body with position, velocity, mass, and orbit history."""
+    def __init__(self, x, y, radius, mass, vx=0, vy=0):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.mass = mass
+        self.vx = vx
+        self.vy = vy
+        self.orbit = [(x, y)]
 
-# ─── 2) Set up simulation parameters ───────────────────────────────────────
-dt          = 1e-4
-store_each  = 100         # match your original decimation
-periods     = 10          # integrate for 10 periods
-N_runs      = len(df)
+    def reset_orbit(self):
+        self.orbit = [(self.x, self.y)]
 
-# Precompute how many stored steps each run would produce
-n_steps_list = [
-    int(periods * row['T'] / dt / store_each) + 1
-    for _, row in df.iterrows()
-]
-# We'll truncate to the shortest run so X has a fixed time‐axis
-min_steps = min(n_steps_list)
+#--- Physics utilities ---
+def gravitational_force(b1, b2, G=1.0):
+    dx = b2.x - b1.x
+    dy = b2.y - b1.y
+    dist2 = dx*dx + dy*dy + 1e-8
+    dist = math.sqrt(dist2)
+    F = G * b1.mass * b2.mass / dist2
+    return (F * dx / dist, F * dy / dist)
 
-# ─── 3) Preallocate arrays ─────────────────────────────────────────────────
-# We'll store only positions here: (x1,y1,x2,y2,x3,y3) so 6 features
-X = np.zeros((N_runs, min_steps, 6), dtype=np.float32)
+def recenter(bodies):
+    """Remove any net drift by recentering positions & velocities to the COM."""
+    M = sum(b.mass for b in bodies)
+    x_cm = sum(b.x * b.mass for b in bodies) / M
+    y_cm = sum(b.y * b.mass for b in bodies) / M
+    vx_cm = sum(b.vx * b.mass for b in bodies) / M
+    vy_cm = sum(b.vy * b.mass for b in bodies) / M
+    for b in bodies:
+        b.x -= x_cm
+        b.y -= y_cm
+        b.vx -= vx_cm
+        b.vy -= vy_cm
 
-# Map your labels ('C','D','S',…) to integers 0…K-1
-labels = sorted(df['stability'].unique())
-label_map = {lab:i for i,lab in enumerate(labels)}
-y = np.zeros((N_runs,), dtype=np.int64)
+#--- Velocity-Verlet integration ---
+def simulate_verlet(bodies, dt, steps,
+                     G=1.0,
+                     max_records=500,
+                     recenter_every=1):
+    """
+    Integrate with velocity-Verlet, recenter every `recenter_every` steps,
+    and keep ~max_records points per body by subsampling.
+    """
+    for b in bodies:
+        b.reset_orbit()
+    skip = max(1, steps // max_records)
 
-# ─── 4) Run simulations ────────────────────────────────────────────────────
-for i, row in tqdm(df.iterrows(), total=N_runs, desc="Building dataset"):
-    # Unpack
-    m1, m2, m3 = row['m1'], row['m2'], row['m3']
-    x1, v1, v2, T = row['x1'], row['v1'], row['v2'], row['T']
-    
-    # Initialize bodies
-    b1 = Body(x1,   0.0, m1,  0.0, v1, r=0.1, col='r')
-    b2 = Body(1.0,  0.0, m2,  0.0, v2, r=0.1, col='g')
-    vy3 = -(m1*v1 + m2*v2) / m3
-    b3 = Body(0.0,  0.0, m3,  0.0, vy3, r=0.1, col='b')
-    bodies = [b1, b2, b3]
-    recenter(bodies)
-    
-    # Integrate
-    steps = int(periods * T / dt)
-    verlet(bodies, dt, steps, recenter_every=0, store_each=store_each)
-    
-    # Collect orbits, convert to arrays
-    orb1 = np.array(b1.orbit[:min_steps], dtype=np.float32)  # shape (min_steps, 2)
-    orb2 = np.array(b2.orbit[:min_steps], dtype=np.float32)
-    orb3 = np.array(b3.orbit[:min_steps], dtype=np.float32)
-    
-    # Fill X: [x1,y1 | x2,y2 | x3,y3]
-    X[i,:,0:2] = orb1
-    X[i,:,2:4] = orb2
-    X[i,:,4:6] = orb3
-    
-    # Label
-    y[i] = label_map[row['stability']]
+    # initial accelerations
+    acc = {b: [0.0, 0.0] for b in bodies}
+    for i, b1 in enumerate(bodies):
+        for b2 in bodies[i+1:]:
+            fx, fy = gravitational_force(b1, b2, G)
+            acc[b1][0] += fx/b1.mass
+            acc[b1][1] += fy/b1.mass
+            acc[b2][0] -= fx/b2.mass
+            acc[b2][1] -= fy/b2.mass
 
-# ─── 5a) Build arrays for the initial conditions ────────────────────────────
-# masses: shape (N_runs, 3)
-masses = df[['m1','m2','m3']].values.astype(np.float32)
+    for step in range(1, steps+1):
+        # half-step velocity
+        for b in bodies:
+            b.vx += 0.5*acc[b][0]*dt
+            b.vy += 0.5*acc[b][1]*dt
+        # full-step position
+        for b in bodies:
+            b.x += b.vx*dt
+            b.y += b.vy*dt
+        # compute new acc
+        new_acc = {b: [0.0, 0.0] for b in bodies}
+        for i, b1 in enumerate(bodies):
+            for b2 in bodies[i+1:]:
+                fx, fy = gravitational_force(b1, b2, G)
+                new_acc[b1][0] += fx/b1.mass
+                new_acc[b1][1] += fy/b1.mass
+                new_acc[b2][0] -= fx/b2.mass
+                new_acc[b2][1] -= fy/b2.mass
+        # half-step velocity
+        for b in bodies:
+            b.vx += 0.5*new_acc[b][0]*dt
+            b.vy += 0.5*new_acc[b][1]*dt
+        # recentre
+        if step % recenter_every == 0:
+            recenter(bodies)
+        acc = new_acc
+        # record
+        if step % skip == 0:
+            for b in bodies:
+                b.orbit.append((b.x, b.y))
 
-# initial positions: shape (N_runs, 3, 2)
-positions = np.zeros((N_runs, 3, 2), dtype=np.float32)
-positions[:,0,0] = df['x1']                # b1.x = x1
-positions[:,1,0] = 1.0                     # b2.x = 1.0
-# b3.x remains 0.0, all y's already 0
+#--- Orbit factories ---
+def stable_nonhierarchical():
+    """Stable 3-body periodic orbit demo."""
+    m1, m2, m3 = 0.8, 0.756, 1.0
+    x1 = -0.135024519775613
+    v1 = 2.51505829297841
+    v2 = 0.316396261593079
+    r = 0.05
+    return [
+        Body(x1, 0.0, r, m1, vy=v1),
+        Body(1.0, 0.0, r, m2, vy=v2),
+        Body(0.0, 0.0, r, m3, vy=-(m1*v1+m2*v2)/m3)
+    ]
 
-# initial velocities: shape (N_runs, 3, 2)
-velocities = np.zeros((N_runs, 3, 2), dtype=np.float32)
-velocities[:,0,1] = df['v1']               # b1.vy = v1
-velocities[:,1,1] = df['v2']               # b2.vy = v2
+def divergent_case():
+    """Divergent 3-body: three bodies escape."""
+    m, r = 1.0, 0.05
+    return [
+        Body(-1.0, 0.0, r, m, vy=1.0),
+        Body(1.0, 0.0, r, m, vy=-1.0),
+        Body(0.0, 1.0, r, m, vx=1.0)
+    ]
 
-# compute b3.vy array exactly as in the integration loop
-vy3_array = (-(df['m1']*df['v1'] + df['m2']*df['v2']) / df['m3']).values
-velocities[:,2,1] = vy3_array.astype(np.float32)
+def collision_three():
+    """
+    Three bodies, but only two initially move toward each other; third is static.
+    Bodies A & B head-on collide; C sits off-axis.
+    """
+    m, r = 1.0, 0.05
+    # A & B on x-axis, moving inward
+    A = Body(-1.0, 0.0, r, m, vx=0.5)
+    B = Body(1.0, 0.0, r, m, vx=-0.5)
+    # C static above
+    C = Body(0.0, 1.5, r, m, vx=0.0, vy=0.0)
+    return [A, B, C]
 
-# ─── 5b) Save everything into the .npz ─────────────────────────────────────
-np.savez_compressed(
-    'threebody_dataset2.npz',
-    X=X,                   # (N_runs, min_steps, 6)
-    y=y,                   # (N_runs,)
-    labels=labels,         # list of string labels
-    masses=masses,         # (N_runs, 3)
-    init_pos=positions,    # (N_runs, 3, 2)
-    init_vel=velocities    # (N_runs, 3, 2)
-)
+#--- Plotting ---
+COMMON_COLORS = ['green', 'blue', 'red']
 
-print(f"Built dataset with {N_runs} samples, each {min_steps} time‐steps long.")
-print("Labels mapping:", label_map)
-print("Saved to threebody_dataset.npz (incl. initial masses, positions, velocities)")
+def plot_final_outcome(bodies, title,
+                       dt, steps,
+                       recenter_every, max_records,
+                       filename='final.png'):
+    simulate_verlet(bodies, dt, steps,
+                     max_records=max_records,
+                     recenter_every=recenter_every)
+    # gather orbits
+    xs_all, ys_all = [], []
+    for b in bodies:
+        xs, ys = zip(*b.orbit)
+        xs_all.extend(xs); ys_all.extend(ys)
+    xmin, xmax = min(xs_all), max(xs_all)
+    ymin, ymax = min(ys_all), max(ys_all)
+    mx = (xmax-xmin)*0.1 or 1.0
+    my = (ymax-ymin)*0.1 or 1.0
+
+    fig, ax = plt.subplots(figsize=(6,6))
+    fig.suptitle(title)
+    ax.set_xlim(xmin-mx, xmax+mx)
+    ax.set_ylim(ymin-my, ymax+my)
+    ax.set_xlabel('x'); ax.set_ylabel('y')
+    for color, b in zip(COMMON_COLORS, bodies):
+        xs, ys = zip(*b.orbit)
+        ax.plot(xs, ys, color=color)
+        ax.scatter(xs[-1], ys[-1], color=color, s=80, edgecolor='k')
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.show()
+    print(f"Saved '{filename}'")
+
+#--- Main ---
+if __name__ == '__main__':
+    # Collision demo: two bump, third static
+    bodies = collision_three()
+    plot_final_outcome(bodies,
+                       title='Two-Body Head-On Collision with Third Body',
+                       dt=0.005,
+                       steps=2000,
+                       recenter_every=1,
+                       max_records=500,
+                       filename='three_body_collision.png')
