@@ -1,21 +1,23 @@
 import pandas as pd
 from tqdm import tqdm
-from newnewfart import Body, recenter, verlet
+from generate_Li_dataset import Body, recenter, verlet
 
 # 1) Load your data
 df = pd.read_csv(
     'dataset.txt',
     delim_whitespace=True,
-    dtype={'m1': float, 'm2': float, 'm3': float,
-           'x1': float, 'v1': float, 'v2': float,
-           'T': float, 'stability': str}
+    dtype={
+        'm1': float, 'm2': float, 'm3': float,
+        'x1': float, 'v1': float, 'v2': float,
+        'T': float, 'stability': str
+    }
 )
 
 # 2) Prepare containers
 records = []
 dt = 0.0001
 
-# Build a counter for **all** labels that appear in your file
+# Build a counter for all labels that appear in your file
 counts = {lab: 0 for lab in df['stability'].unique()}
 
 # 3) Simulate with progress bar
@@ -46,7 +48,7 @@ for idx, row in tqdm(df.iterrows(), total=len(df), desc="Simulating runs"):
         'b3_vel':   bodies[2].velhist,
     }
     
-    # Count using the original label (could be 'C', 'D', 'S', ...)
+    # Count using the original label (could be 'C', 'D', 'S', etc.)
     orig_lab = row['stability']
     counts[orig_lab] += 1
     
@@ -58,11 +60,15 @@ for idx, row in tqdm(df.iterrows(), total=len(df), desc="Simulating runs"):
         'trajectories': traj
     })
 
-# 4) Save your augmented dataset
-out_path = 'dataset_with_trajectories.json'
-pd.DataFrame(records).to_json(out_path, orient='records', double_precision=14)
+# 4) Save your augmented dataset as a .txt
+out_path = 'data/dataset_with_trajectories.txt'
+pd.DataFrame(records).to_csv(
+    out_path,
+    sep=' ',    # space‐delimited
+    index=False
+)
 
 # 5) Print a final tally for every label
-print(f"\nFinished {len(records)} runs:")
+print(f"\nFinished {len(records)} runs. Results:")
 for label, ct in counts.items():
     print(f"  → {label:11s}: {ct}")

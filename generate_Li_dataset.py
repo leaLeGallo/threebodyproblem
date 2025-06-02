@@ -118,7 +118,7 @@ def classify(bs):
     return 'stable'
 
 # ---------------------------------------------------------------------------
-def make_dataset(nC=50, nD=50, dt=0.0001, out='dataset.txt'):
+def make_dataset(nC=50, nD=50, dt=0.0001, out='data/threebody_dataset2.npz'):
     want = {'convergence': nC, 'divergence': nD}
     have = {k: 0 for k in want}
     rows = []

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from newnewfart import Body, recenter, verlet
+from generate_Li_dataset import Body, recenter, verlet
 
 # ─── 1) Load the initial‐conditions ─────────────────────────────────────────
 df = pd.read_csv(
